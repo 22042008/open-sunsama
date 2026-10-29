@@ -1,0 +1,53 @@
+diff --git a/apps/api/src/workers/calendar-sync/index.ts b/apps/api/src/workers/calendar-sync/index.ts
+--- a/apps/api/src/workers/calendar-sync/index.ts
++++ b/apps/api/src/workers/calendar-sync/index.ts
+@@ -57,6 +57,14 @@ export async function registerCalendarSyncWorkers(): Promise<void> {
+       await Promise.all(jobs.map(job => processSyncAccount(job)));
+     }
+   );
+ 
++  // Run a check immediately after worker registration instead of waiting
++  // for the next five-minute cron boundary. The regular cron schedule below
++  // remains responsible for all subsequent checks.
++  const startupCheckId = await boss.send(JOBS.CALENDAR_SYNC_CHECK, {});
++  console.log(
++    `[Calendar Sync Worker] Queued startup check${startupCheckId ? ` (${startupCheckId})` : ''}`
++  );
++
+   console.log('[Calendar Sync Worker] Registered and scheduled');
+ }
+diff --git a/apps/api/src/workers/calendar-sync/sync-check.ts b/apps/api/src/workers/calendar-sync/sync-check.ts
+--- a/apps/api/src/workers/calendar-sync/sync-check.ts
++++ b/apps/api/src/workers/calendar-sync/sync-check.ts
+@@ -13,2 +13,3 @@ import { type SyncAccountPayload } from './sync-account.js';
+-// Sync interval in minutes - accounts not synced in this time will be queued
+-const SYNC_INTERVAL_MINUTES = 15;
++// Sync interval in minutes - accounts not synced in this time will be queued.
++// The checker runs every five minutes, so use the same cadence here.
++const SYNC_INTERVAL_MINUTES = 5;
+@@ -40,2 +42,3 @@ export async function processCalendarSyncCheck(
+   const now = new Date();
++  console.log(`[Calendar Sync Check] Tick at ${now.toISOString()}`);
+ 
+@@ -88,3 +91,4 @@ export async function processCalendarSyncCheck(
+   if (accountsNeedingSync.length === 0) {
++    console.log('[Calendar Sync Check] No accounts are due for sync');
+     return;
+   }
+@@ -122,9 +126,15 @@ export async function processCalendarSyncCheck(
+         .where(eq(calendarAccounts.id, account.id));
+ 
+-      await boss.send(JOBS.SYNC_CALENDAR_ACCOUNT, {
++      const jobId = await boss.send(JOBS.SYNC_CALENDAR_ACCOUNT, {
+         accountId: account.id,
+         userId: account.userId,
+         provider: account.provider,
+       } as SyncAccountPayload);
++
++      // Do not leave the account marked "syncing" if pg-boss declines
++      // to enqueue the job (send returns null).
++      if (!jobId) {
++        throw new Error('pg-boss did not enqueue the calendar sync job');
++      }
+ 
+       jobsQueued++;
